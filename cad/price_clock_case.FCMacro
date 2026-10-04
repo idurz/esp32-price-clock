@@ -1,0 +1,149 @@
+import os
+import FreeCAD as App
+import Part
+import Mesh
+
+
+OUT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Dutch single inbouwdoos faceplate and device envelope, dimensions in mm.
+FACE_W = 80.0
+FACE_H = 80.0
+FACE_R = 4.0
+FACE_T = 3.2
+BOX_SCREW_SPACING = 60.0
+BOX_SCREW_CLEARANCE = 4.5
+
+CASE_OD = 68.0
+CASE_WALL = 2.0
+CASE_DEPTH = 20.5
+CASE_ID = CASE_OD - 2.0 * CASE_WALL
+LID_T = 2.0
+DISPLAY_APERTURE = 34.0
+DISPLAY_PCB_OD = 40.0
+BUTTON_HOLE = 12.3
+BUTTON_Y = -24.0
+USB_SLOT_W = 12.0
+USB_SLOT_H = 6.0
+
+BOSS_SPACING = 18.0
+BOSS_OD = 7.0
+BOSS_BORE = 2.2
+BOARD_WIDTH = 25.4
+BOARD_LENGTH = 34.0
+BOARD_GUIDE_GAP = BOARD_WIDTH + 0.8
+
+
+def rounded_face_plate(width, height, radius, z, thickness):
+    half_w = width / 2.0
+    half_h = height / 2.0
+    core_x = Part.makeBox(width - 2 * radius, height, thickness,
+                          App.Vector(-half_w + radius, -half_h, z))
+    core_y = Part.makeBox(width, height - 2 * radius, thickness,
+                          App.Vector(-half_w, -half_h + radius, z))
+    shape = core_x.fuse(core_y)
+    for x in (-half_w + radius, half_w - radius):
+        for y in (-half_h + radius, half_h - radius):
+            shape = shape.fuse(Part.makeCylinder(radius, thickness,
+                                                App.Vector(x, y, z)))
+    return shape.removeSplitter()
+
+
+def annulus(outer_radius, inner_radius, z, height):
+    outer = Part.makeCylinder(outer_radius, height, App.Vector(0, 0, z))
+    inner = Part.makeCylinder(inner_radius, height + 0.2,
+                              App.Vector(0, 0, z - 0.1))
+    return outer.cut(inner)
+
+
+doc = App.newDocument("ESP32PriceClockCase")
+
+# Front shell: an 80 mm wall-box face and a round rear cup.
+plate = rounded_face_plate(FACE_W, FACE_H, FACE_R, 0, FACE_T)
+outer_cup = Part.makeCylinder(CASE_OD / 2.0, CASE_DEPTH,
+                              App.Vector(0, 0, -CASE_DEPTH))
+inner_cup = Part.makeCylinder(CASE_ID / 2.0, CASE_DEPTH + 0.2,
+                              App.Vector(0, 0, -CASE_DEPTH - 0.1))
+cup = outer_cup.cut(inner_cup)
+shell = plate.fuse(cup)
+
+# Box mounting screws: horizontal 60 mm centres with shallow front countersinks.
+for x in (-BOX_SCREW_SPACING / 2.0, BOX_SCREW_SPACING / 2.0):
+    through = Part.makeCylinder(BOX_SCREW_CLEARANCE / 2.0, FACE_T + 0.2,
+                                App.Vector(x, 0, -0.1))
+    countersink = Part.makeCone(BOX_SCREW_CLEARANCE / 2.0, 4.0, 1.4,
+                                App.Vector(x, 0, FACE_T - 1.4))
+    shell = shell.cut(through.fuse(countersink))
+
+# Display opening and the 12 mm panel-button bushing opening.
+display_hole = Part.makeCylinder(DISPLAY_APERTURE / 2.0, FACE_T + 0.4,
+                                 App.Vector(0, 0, -0.2))
+button_hole = Part.makeCylinder(BUTTON_HOLE / 2.0, FACE_T + 0.4,
+                                App.Vector(0, BUTTON_Y, -0.2))
+shell = shell.cut(display_hole).cut(button_hole)
+
+# Internal annular ledge catches the edge of the round display PCB.
+# The visible opening stays clear; confirm the board OD before printing.
+display_lip = annulus(DISPLAY_PCB_OD / 2.0, DISPLAY_APERTURE / 2.0 - 0.15,
+                      -2.7, 2.8)
+shell = shell.fuse(display_lip)
+
+# Four rear-cover screw bosses. Their positions avoid the nominal 40 mm display PCB.
+boss_positions = []
+for x in (-BOSS_SPACING, BOSS_SPACING):
+    for y in (-BOSS_SPACING, BOSS_SPACING):
+        boss_positions.append((x, y))
+        boss = Part.makeCylinder(BOSS_OD / 2.0, CASE_DEPTH - 1.0,
+                                 App.Vector(x, y, -CASE_DEPTH))
+        bore = Part.makeCylinder(BOSS_BORE / 2.0, CASE_DEPTH - 0.8,
+                                 App.Vector(x, y, -CASE_DEPTH - 0.05))
+        shell = shell.fuse(boss.cut(bore))
+
+# Side opening for the S2 Mini USB-C connector; orient board USB edge toward -Y.
+usb_slot = Part.makeBox(USB_SLOT_W, CASE_WALL + 2.0, USB_SLOT_H,
+                        App.Vector(-USB_SLOT_W / 2.0, -CASE_OD / 2.0 - 1.0,
+                                   -CASE_DEPTH + 2.0))
+shell = shell.cut(usb_slot).removeSplitter()
+
+# Rear lid, with screw clearances and simple rails to retain the S2 Mini board
+# flat against the inside of the lid. Board nominally lies centered, USB toward -Y.
+lid = Part.makeCylinder(CASE_OD / 2.0 - 0.15, LID_T,
+                        App.Vector(0, 0, -CASE_DEPTH - LID_T))
+for x, y in boss_positions:
+    screw_hole = Part.makeCylinder(2.7 / 2.0, LID_T + 0.2,
+                                   App.Vector(x, y, -CASE_DEPTH - LID_T - 0.1))
+    lid = lid.cut(screw_hole)
+
+guide_h = 1.8
+guide_t = 1.2
+guide_len = BOARD_LENGTH + 1.0
+guide_z = -CASE_DEPTH
+for x in (-BOARD_GUIDE_GAP / 2.0 - guide_t, BOARD_GUIDE_GAP / 2.0):
+    guide = Part.makeBox(guide_t, guide_len, guide_h,
+                         App.Vector(x, -guide_len / 2.0, guide_z))
+    lid = lid.fuse(guide)
+lid = lid.removeSplitter()
+
+shell_obj = doc.addObject("Part::Feature", "FrontHousing")
+shell_obj.Label = "Front housing - display and button face"
+shell_obj.Shape = shell
+lid_obj = doc.addObject("Part::Feature", "RearLid")
+lid_obj.Label = "Rear lid - ESP32 S2 Mini board guides"
+lid_obj.Shape = lid
+
+doc.recompute()
+if not shell_obj.Shape.isValid() or not lid_obj.Shape.isValid():
+    raise RuntimeError("Generated case contains an invalid solid")
+doc.saveAs(os.path.join(OUT_DIR, "price_clock_case.FCStd"))
+
+Mesh.export([shell_obj], os.path.join(OUT_DIR, "price_clock_front_housing.stl"))
+Mesh.export([lid_obj], os.path.join(OUT_DIR, "price_clock_rear_lid.stl"))
+
+print("Exported case parts to " + OUT_DIR)
+print("Front face: 80 x 80 mm; wall screws: 60 mm centres")
+print("Rear cup OD: 68 mm; total front-to-back depth: %.1f mm" %
+      (FACE_T + CASE_DEPTH + LID_T))
+print("Display aperture: %.1f mm; display PCB ledge: %.1f mm nominal" %
+      (DISPLAY_APERTURE, DISPLAY_PCB_OD))
+print("Button hole: %.1f mm at Y=%.1f mm" % (BUTTON_HOLE, BUTTON_Y))
+print("Housing and lid solids are valid.")
